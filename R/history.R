@@ -15,6 +15,8 @@ historyTracker = function(id = "history_tracker") {
 #' @aliases knitr_tracker
 #' @export
 knitrTracker = function() {
+    if(!requireNamespace("knitr", quietly=TRUE))
+        return(NULL)
     kh_tracker$new()
 }
 

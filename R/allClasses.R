@@ -121,7 +121,7 @@ h_tracker = setRefClass("HistoryTracker",
 ##' @rdname tracers
 ##' @export
 knitrtracer = function(on, record = FALSE) {
-    if(!requireNamespace("evaluate") || !requireNamespace("knitr"))
+    if(!requireNamespace("evaluate", quietly=TRUE) || !requireNamespace("knitr", quietly=TRUE))
         return(NULL)
     
     if(on) {
@@ -225,7 +225,7 @@ kh_tracker = setRefClass("KnitrHistoryTracker",
                          methods = list(
                              initialize = function( .exprs = NULL,
                                                   .classes = character(), ...) {
-                             if(!require("knitr"))
+                             if(!requireNamespace("knitr", quietly=TRUE))
                                  stop("Can't use KnitrHistoryTracker without knitr, which failed to load")
                              obj = callSuper(exprs = .exprs,
                                              classes = .classes, ...)
