@@ -1,5 +1,5 @@
 #' @import methods evaluate
-#' @importFrom utils tail
+#' @importFrom utils tail head
 
 
 
@@ -7,13 +7,23 @@
 ht_callback = function(expr, value, success, printed, tracker) {
     if(!success)
         return(TRUE)
-    tracker$addInfo(expr, class(value), fastdigest(value))
+    tracker$addInfo(expr = expr, class = utils::head(class(value), 1), hash = fastdigest(value))
     TRUE
 }
 
 
 ignorepattern = "^.ess"
-    
+
+
+##' @name HistoryData
+##' @description A (non-reference) class representing the known history state
+##' @title HistoryData
+##' @docType methods
+##' @exportClass HistoryData
+##' @aliases HistoryData-class
+setClass("HistoryData", representation = list(exprs = "ANY", classes = "character", hashes = "character"))
+
+
 #' @name HistoryTracker
 #' @description These classes implement history tracking in various contexts
 #' @title A reference class for tracking code history
@@ -23,45 +33,36 @@ ignorepattern = "^.ess"
 #' @aliases VirtHistoryTracker-class
 
 vh_tracker = setRefClass("VirtHistoryTracker",
-                        fields = c(
-                                   exprs = "ANY",
-                                   classes = "character",
-                                   hashes = "character",
+                         fields = c(hdata = "HistoryData",
                                    tracking = "logical"),
                         methods = list(
                             addInfo = function(expr, class, hash, envir = .GlobalEnv) {
 
-                          
+
+                        
                             if(is.character(expr) && length(expr) > 1)
                                 expr = paste(expr, collapse="\n")
 
                             if(any(grepl(ignorepattern,expr)))
                                 return(NULL)
-                            if(is.null(.self$exprs))
-                                .self$exprs = list(expr)
-                            else
-                                .self$exprs = c(.self$exprs, expr)
-                            .self$classes = c(.self$classes, class)
-
-                            if(is.character(expr))
-                                pexpr = parse(text = expr)
-                            else if(is.expression(expr))
-                                pexpr = expr[[1]]
-                            else
-                                pexpr = expr
-                            
-                            
+                            newdat= new("HistoryData", exprs = expr, classes = class, hashes = hash)
+                            .self$hdata = combineHistry(hData(.self), newdat)
                         },
                         toggleTracking = function() stop("Not implemented on virtual class"),
                         clear = function() {
-                            .self$exprs = NULL
-                            .self$classes = character()
-                            .self$hashes = character()
+                            .self$hdata = new("HistoryData")
                         },
                         filter = function(syms = ls(ns, all.names=TRUE), ns = emptyenv()) {
                             
 
                             
+                        },
+                        importHistory = function(impdata, before = TRUE) {
+                            if(is.character(impdata) && length(impdata) == 1 && file.exists(impdata))
+                                impdata = readRDS(impdata)
+                            if(!is(impdata, "HistoryData"))
+                                stop("Only able to import HistoryData objects")
+                            .self$hdata = combineHistry(x = .self$hdata, y = impdata, before = before)
                         }))
 
 
@@ -75,24 +76,18 @@ h_tracker = setRefClass("HistoryTracker",
                             id = "character"
                             ),
                         methods = list(
-                            initialize = function(id = "hist_tracker", .exprs = NULL,
-                                                  .classes = character(), ...) {
+                            initialize = function(id = "hist_tracker", ...) {
                             exstcbs = getTaskCallbackNames()
                             origid = id
                             id2 = id
                             while(id2 %in% exstcbs)
                                 id2 = paste0(origid, fastdigest(id2))
                             
-                            obj = callSuper( exprs = .exprs, classes = .classes,
-                                            ...)
+                            obj = callSuper(...)
                             obj$id = id2
                             obj$tracking = FALSE
                             obj$toggleTracking()
                             obj
-                            ## .self$id = id
-                            ## .self$tracking = FALSE
-                            ## .self$toggleTracking()
-                            ## .self
                         },
                         toggleTracking = function() {
                             if(.self$tracking) {
@@ -139,30 +134,11 @@ knitrtracer = function(on, record = FALSE) {
     }
 }
 
-ev_call_txt = paste0("evaluate:", "::evaluate_call")
-ev_call_expr = parse(text = ev_call_txt)
-ev_call_untrace = parse(text = paste0("untrace(", ev_call_txt, ")"))
-
-trc_code_txt = function(record) {
-    paste(c(paste0("suppressMessages(trace(evaluate::", ":evaluate_call,"),
-      "at = length(body(", paste0("evaluate::", ":evaluate_call"), ")),",
-      "tracer = quote(if( histropts()$inKnitr && !is(ev$value, 'try-error')) {",
-      "                                                     expr2 = deparse(expr)",
-      "                                                      histry_addinfo(expr = expr2,",
-      "                                                              class = class(ev$value))",
-      if(record) { paste(
-      "                                                      if(ev$visible)",
-      "                                                    trackr::record(ev$value, symorpos = length(histry()))", sep="\n")
-      } else { "" },
-      "                                            }),",
-      "                             print = FALSE))"
-      ), collapse = "\n")
-}
-
-parseEval =  function(txt) eval(parse(text=txt))
 
 
-
+## currently we grab the first (top level) S3 "class" here.
+## to get the lowest level replace class(ev$value)[1] with
+## tail(class(ev$value), 1)
 ##' evaltracer
 ##' 
 ##' @rdname tracers
@@ -185,7 +161,7 @@ evaltracer = function(on=TRUE, record = FALSE) {
                                        tracer = quote(if( histropts()$inKnitr && !is(ev$value, "try-error")) {
                                                           expr2 = deparse(expr)
                                                           histry_addinfo(expr = expr2,
-                                                                     class = class(ev$value))
+                                                                     class = utils::head(class(ev$value), 1), hash = fastdigest::fastdigest(ev$value))
                                                           if(ev$visible)
                                                               record(ev$value, symorpos = length(histry()))
                                                       }),
@@ -199,7 +175,7 @@ evaltracer = function(on=TRUE, record = FALSE) {
                                        tracer = quote(if(histropts()$inKnitr && !is(ev$value, "try-error")) {
                                                           expr2 = deparse(expr)
                                                           histry_addinfo(expr = expr2,
-                                                                         class = class(ev$value))
+                                                                         class = utils::head(class(ev$value), 1), hash = fastdigest::fastdigest(ev$value))
                                                       }),
                                        print = FALSE
                                        )
@@ -223,12 +199,10 @@ evaltracer = function(on=TRUE, record = FALSE) {
 kh_tracker = setRefClass("KnitrHistoryTracker",
                          contains = "VirtHistoryTracker",
                          methods = list(
-                             initialize = function( .exprs = NULL,
-                                                  .classes = character(), ...) {
+                             initialize = function(...) {
                              if(!requireNamespace("knitr", quietly=TRUE))
                                  stop("Can't use KnitrHistoryTracker without knitr, which failed to load")
-                             obj = callSuper(exprs = .exprs,
-                                             classes = .classes, ...)
+                             obj = callSuper(...)
                              obj$tracking=TRUE
                              obj
                          }
@@ -253,4 +227,151 @@ state = setRefClass("HistryState",
                           stop("Can't set history tracker this way, set evalHistory or knitrHistory directly")
                       }
                   }))
+
+
+
+##' @rdname accessors
+##' @description Getters and setters for histry-related objects
+##' @title Histry object accessors
+##' @param obj The object to access components of.
+##' @export
+setGeneric("exprs", function(obj) standardGeneric("exprs"))
+##' @rdname accessors
+##' @export
+##' @aliases exprs,HistoryData
+setMethod("exprs", "HistoryData", function(obj) obj@exprs)
+##' @rdname accessors
+##' @export
+##' @aliases exprs,VirtHistoryTracker
+setMethod("exprs", "VirtHistoryTracker", function(obj) exprs(hData(obj)))
+
+##' @rdname accessors
+##' @param value The new value for the field.
+##' @export
+##' @aliases exprs<-
+setGeneric("exprs<-", function(obj, value) standardGeneric("exprs<-"))
+##' @rdname accessors
+##' @export
+##' @aliases exprs<-,HistoryData
+setMethod("exprs<-", "HistoryData", function(obj, value) {
+    obj@exprs = value
+    obj
+})
+##' @rdname accessors
+##' @export
+##' @aliases exprs<-,VirtHistoryTracker
+setMethod("exprs<-", "VirtHistoryTracker", function(obj, value) {
+    
+    tmp = hData(obj)
+    exprs(tmp) <- value
+    hData(obj) = tmp
+    obj
+
+})
+
+## I didn't like having an accessor named classes, so added the ret_ here
+##' @rdname accessors
+##' @export
+##' @aliases ret_classes
+setGeneric("ret_classes", function(obj) standardGeneric("ret_classes"))
+##' @rdname accessors
+##' @export
+##' @aliases ret_classes,HistoryData
+setMethod("ret_classes", "HistoryData", function(obj) obj@classes)
+##' @rdname accessors
+##' @export
+##' @aliases ret_classes,VirtHistoryTracker
+setMethod("ret_classes", "VirtHistoryTracker", function(obj) ret_classes(hData(obj)))
+
+##' @rdname accessors
+##' @export
+##' @aliases ret_classes<-
+
+setGeneric("ret_classes<-", function(obj, value) standardGeneric("ret_classes<-"))
+
+##' @rdname accessors
+##' @export
+##' @aliases ret_classes<-,HistoryData
+setMethod("ret_classes<-", "HistoryData", function(obj, value) {
+    obj@classes = value
+    obj
+})
+##' @rdname accessors
+##' @export
+##' @aliases ret_classes<-,VirtHistoryTracker
+
+setMethod("ret_classes<-", "VirtHistoryTracker", function(obj, value) {
+    tmp = hData(obj)
+    ret_classes(tmp) <- value
+    hData(obj) = tmp
+    obj
+})
+
+
+##' @rdname accessors
+##' @export
+##' @aliases hashes
+setGeneric("hashes", function(obj) standardGeneric("hashes"))
+
+##' @rdname accessors
+##' @export
+##' @aliases hashes,HistoryData
+setMethod("hashes", "HistoryData", function(obj) obj@hashes)
+
+##' @rdname accessors
+##' @export
+##' @aliases hashes,VirtHistoryTracker
+setMethod("hashes", "VirtHistoryTracker", function(obj) hashes(hData(obj)))
+
+##' @rdname accessors
+##' @export
+##' @aliases hashes<-
+setGeneric("hashes<-", function(obj, value) standardGeneric("hashes<-"))
+##' @rdname accessors
+##' @export
+##' @aliases hashes<-,HistoryData
+setMethod("hashes<-", "HistoryData", function(obj, value) {
+    obj@hashes = value
+    obj
+})
+##' @rdname accessors
+##' @export
+##' @aliases hashes<-,VirtHistoryTracker
+setMethod("hashes<-", "VirtHistoryTracker", function(obj, value) {
+    tmp = hData(obj)
+    hashes(tmp) <- value
+    hData(obj) = tmp
+    obj
+})
+
+##' @rdname accessors
+##' @export
+##' @aliases hData
+setGeneric("hData", function(obj) standardGeneric("hData"))
+##' @rdname accessors
+##' @export
+##' @aliases hData,HistoryData
+setMethod("hData", "HistoryData", function(obj) obj)
+##' @rdname accessors
+##' @export
+##' @aliases hData,VirtHistoryTracker
+setMethod("hData", "VirtHistoryTracker", function(obj) obj$hdata)
+
+##' @rdname accessors
+##' @export
+##' @aliases hData<-
+setGeneric("hData<-", function(obj, value) standardGeneric("hData<-"))
+##' @rdname accessors
+##' @export
+##' @aliases hData<-,HistoryData
+setMethod("hData<-", "HistoryData", function(obj, value) value)
+##' @rdname accessors
+##' @export
+##' @aliases hData<-,VirtHistoryTracker
+setMethod("hData<-", "VirtHistoryTracker", function(obj, value) {
+    obj$hdata = value
+    obj
+})
+
+
 
